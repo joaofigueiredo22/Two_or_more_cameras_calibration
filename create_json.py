@@ -51,6 +51,11 @@ def find_cam_chess_realpoints(fname, k_matrix, dist_matrix):
         objpoints.append(pts_chessboard)
         corners2 = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
         imgpoints.append(corners2)
+        # img1 = cv2.imread(fname)
+        # img = cv2.drawChessboardCorners(img1, (9, 6), imgpoints[0], True)
+        # cv2.imshow('img', img1)
+        # cv2.waitKey(0)
+
     else:
         return 0
 
@@ -96,7 +101,8 @@ if __name__ == "__main__":
     dist_matrix = np.zeros((len(sensors), 5), np.float32)
     i2 = 0
     sensor = []
-    for i in calibration_data['collections']:
+    for i in range(len(calibration_data['collections'])):
+
         i3 = 0
         for i1 in sensors:
             name_image = args['dataset_path'] + calibration_data['collections'][str(i)]['data'][str(i1)]['data_file']
@@ -104,19 +110,21 @@ if __name__ == "__main__":
 
             if i == "0":
                 sensor.append(str(i1))
-                k_matrix[i2, 0, :] = calibration_data['sensors'][str(i1)]['camera_info']['K'][0:3]
-                k_matrix[i2, 1, :] = calibration_data['sensors'][str(i1)]['camera_info']['K'][3:6]
-                k_matrix[i2, 2, :] = calibration_data['sensors'][str(i1)]['camera_info']['K'][6:9]
-                dist_matrix[i2, :] = calibration_data['sensors'][str(i1)]['camera_info']['D']
+                a = np.zeros(len(calibration_data['sensors'][str(i1)]['camera_info']['K']))
+                for i in range(len(calibration_data['sensors'][str(i1)]['camera_info']['K'])):
+                    a[i] = float(calibration_data['sensors'][str(i1)]['camera_info']['K'][str(i)])
+                k_matrix[:, :, i2] = a.reshape(3, 3)
+                for i in range(len(calibration_data['sensors'][str(i1)]['camera_info']['D'])):
+                    dist_matrix[i2, i] = float(calibration_data['sensors'][str(i1)]['camera_info']['K'][str(i)])
+                # k_matrix[i2, 0, :] = calibration_data['sensors'][str(i1)]['camera_info']['K'][0:3]
+                # k_matrix[i2, 1, :] = calibration_data['sensors'][str(i1)]['camera_info']['K'][3:6]
+                # k_matrix[i2, 2, :] = calibration_data['sensors'][str(i1)]['camera_info']['K'][6:9]
+                # dist_matrix[i2, :] = calibration_data['sensors'][str(i1)]['camera_info']['D']
                 i2 += 1
 
-            calibration_data['collections'][str(i)]['data'][str(i1)]['detected'] = find_cam_chess_realpoints(name_image, k_matrix[i3, :, :], dist_matrix[i3, :])
+            calibration_data['collections'][str(i)]['data'][str(i1)]['detected'] = find_cam_chess_realpoints(name_image, k_matrix[: , :, i3], dist_matrix[i3, :])
             i3 += 1
 
-    with open('test1.txt', 'w') as outfile:
+    with open(args['json_path'], 'w') as outfile:
         json.dump(calibration_data, outfile)
     exit(0)
-    img1 = cv2.imread(name_image[0])
-    # img = cv2.drawChessboardCorners(img1, (9, 6), calibration.right_cam_image_points[ind1][0], True)
-    cv2.imshow('img', img1)
-    cv2.waitKey(0)

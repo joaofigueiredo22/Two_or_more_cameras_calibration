@@ -236,6 +236,10 @@ if __name__ == "__main__":
     left_cam_T_chess_ground_truth[0:3, 3] = tvec_cam_left.T
     left_cam_T_chess_ground_truth[3, :] = [0, 0, 0, 1]  # homogenize
 
+    # print(left_cam_T_chess_ground_truth)
+    # print(center_cam_T_chess_ground_truth)
+    # print(right_cam_T_chess_ground_truth)
+    # exit(0)
 
     for i3 in range(len(name_image_left)):
         rvec_cam_left, tvec_cam_left = find_cam_chess_realpoints(str(name_image_left[i3]), 0)
