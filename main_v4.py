@@ -20,6 +20,7 @@ import OptimizationUtils.OptimizationUtils as OptimizationUtils
 import json
 import itertools
 from collections import namedtuple
+import random
 
 from colorama import Fore
 
@@ -46,10 +47,24 @@ class Calibration:
         self.cams_translation = np.zeros((len(sensors), 3))
         self.sensors = sensor_info
         self.collections = collections
+        self.errorxy = 0
+        self.numberiterations = 0
 
     def __getitem__(self, key):
         print ("Inside `__getitem__` method!")
         return self
+
+    def testCollections(self, max, dict):
+        matrix = np.zeros((len(dict['collections']) - max, len(dict['calibration_config']['sensor_order'])))
+        valid_col = []
+        for i in range(max, len(dict['collections'])):
+            i2 = 0
+            for i1 in dict['calibration_config']['sensor_order']:
+                matrix[i - max, i2] = dict['collections'][str(i)]['data'][str(i1)]['detected']
+                i2 += 1
+            if sum(matrix[i - max, :]) > 0:
+                valid_col.append(i)
+        return valid_col
 
     def showResults(self, sensors_first_guess):
         for i, s in enumerate(self.sensors):
@@ -80,6 +95,48 @@ class Calibration:
                 cv2.imshow('Sensor: ' + s.name + ' Collection: ' + str(col), img)
                 cv2.waitKey(3000)
                 cv2.destroyWindow('Sensor: ' + s.name + ' Collection: ' + str(col))
+
+    def saveResults(self, sensors_first_guess, dict):
+        col = random.choice(self.collections)
+        ind = self.collections.index(col)
+
+        for i, s in enumerate(self.sensors):
+            if dict['collections'][str(col)]['data'][s.name]['detected'] == '0':
+                continue
+            # Image First Guess
+            chess_matrix = chess_first_guess[ind, :, :]
+            world_to_chess = inv_transformation_matrix(chess_matrix)
+            transformation_matrix = np.dot(sensors_first_guess[i, :, :], world_to_chess)
+            r_cam2tochess_vector, t_cam2tochess = matrix_to_vector(transformation_matrix)
+
+            image_points_first_guess = cv2.projectPoints(pts_chessboard, r_cam2tochess_vector, t_cam2tochess,
+                                                   s.k, s.dist)
+
+            img1 = cv2.imread(s.image + str(col) + '.jpg')
+            img2 = cv2.imread(s.image + str(col) + '.jpg')
+
+            img_first_guess = cv2.drawChessboardCorners(img1, (9, 6), image_points_first_guess[0], True)
+
+            chess_otimized = create_matrix_4by4(self.chess_rotation_vector[ind, :], self.chess_translation[ind, :])
+            world_to_chess_otimized = inv_transformation_matrix(chess_otimized)
+            cam_matrix_otimized = create_matrix_4by4(self.cams_rotation_vector[i, :], self.cams_translation[i, :])
+            transformation_matrix_otimized = np.dot(cam_matrix_otimized, world_to_chess_otimized)
+            rotation_vector_otimized, translation_vector_otimized = matrix_to_vector(transformation_matrix_otimized)
+            image_points_otimized = cv2.projectPoints(pts_chessboard, rotation_vector_otimized, translation_vector_otimized, s.k, s.dist)
+            img_otimized = cv2.drawChessboardCorners(img2, (9, 6), image_points_otimized[0], True)
+            img = cv2.hconcat((img_first_guess, img_otimized))
+
+            cv2.imshow('Sensor: ' + s.name + ' Collection: ' + str(col), img)
+            result = cv2.imwrite(args['dataset_path'] + 'saved_collection/' + str(s.name) + '_results.jpg', img)
+
+            if result == True:
+                print('File saved successfully')
+            else:
+                print('Error in saving file')
+
+            cv2.waitKey(3000)
+            cv2.destroyWindow('Sensor: ' + s.name + ' Collection: ' + str(col))
+            return
 
     def resetImagePoints(self):
         for i, s in enumerate(self.sensors):
@@ -122,6 +179,7 @@ class FirtsGuessCollections:
         self.matrix = np.zeros((len(self.dict['collections']), len(self.dict['calibration_config']['sensor_order'])))
         self.collections_sensors_list = []
         self.valid_collections_list = []
+        self.valid_collections_first_guess = []
         self.non_paired_sensors = []
         self.sensors_list = self.dict['calibration_config']['sensor_order']
         self.sensors = []
@@ -138,25 +196,33 @@ class FirtsGuessCollections:
             dist = np.zeros((5), np.float64)
             for i_3 in range(len(self.dict['sensors'][str(s)]['camera_info']['D'])):
                 dist[i_3] = float(self.dict['sensors'][str(s)]['camera_info']['D'][str(i_3)])
-
+            # print(k)
+            # print(dist)
+            # exit(0)
             name_img = str(args['dataset_path'] + s + '_')
             new = Sensor(k, dist, s, name_img)
             self.sensors.append(new)
         return self.sensors
 
-    def detectedChessCollectionsPerSensor(self):
-        for i in range(len(self.dict['collections'])):
+    def detectedChessCollectionsPerSensor(self, max, min):
+
+        for i in range(max):
             i2 = 0
             for i1 in self.dict['calibration_config']['sensor_order']:
                 self.matrix[i, i2] = self.dict['collections'][str(i)]['data'][str(i1)]['detected']
                 i2 += 1
-            if sum(self.matrix[i, :]) > 1:
+            if sum(self.matrix[i, :]) == min:
                 self.valid_collections_list.append(i)
+            if sum(self.matrix[i, :]) > 1:
+                self.valid_collections_first_guess.append(i)
 
     def filterDetectedCollactionsMatrix(self):
-        self.filtered_matrix = np.zeros((len(self.valid_collections_list), self.matrix.shape[1]))
+        self.filtered_matrix = np.zeros((len(self.valid_collections_first_guess), self.matrix.shape[1]))
+        for i in range(len(self.valid_collections_first_guess)):
+            self.filtered_matrix[i, :] = self.matrix[self.valid_collections_first_guess[i], :]
+        self.filtered_matrix_chess = np.zeros((len(self.valid_collections_list), self.matrix.shape[1]))
         for i in range(len(self.valid_collections_list)):
-            self.filtered_matrix[i, :] = self.matrix[self.valid_collections_list[i], :]
+            self.filtered_matrix_chess[i, :] = self.matrix[self.valid_collections_list[i], :]
 
     def addCollectionSensorPair(self, collection, s1, s2):
         new = CollectionSensorPair(collection, s1, s2)
@@ -173,7 +239,7 @@ class FirtsGuessCollections:
             for index, s in enumerate(self.sensors_list[1:]):
                 if s in self.world_referencial_connection_list:
                     break
-                for index_1, col in enumerate(self.valid_collections_list):
+                for index_1, col in enumerate(self.valid_collections_first_guess):
                     if self.filtered_matrix[index_1, index + 1] == 1:
                         for i, s1 in enumerate(self.world_referencial_connection_list):
                             if self.filtered_matrix[index_1, self.sensors_list.index(s1)] == 1:
@@ -235,13 +301,17 @@ class FirtsGuessCollections:
             else:
                 aux_transformation_matrix = np.dot(s2_transformation_matrix, s1_inv_matrix)
                 self.sensors_first_guess[self.sensors_list.index(s.pair.s2), :, :] = np.dot(aux_transformation_matrix, self.sensors_first_guess[self.sensors_list.index(s.pair.s1), :, :])
+        # self.sensors_first_guess[1, :, :] = np.eye(4)
+        # self.sensors_first_guess[2, :, :] = np.eye(4)
+        # self.sensors_first_guess[3, :, :] = np.eye(4)
+        # self.sensors_first_guess[4, :, :] = np.eye(4)
         return self.sensors_first_guess
 
     def chessboardsFirstGuess(self):
         chess_first_guess = np.zeros((len(self.valid_collections_list), 4, 4))
         for i, col in enumerate(self.valid_collections_list):
             # print(self.filtered_matrix[0].index(1))
-            index_sensor = np.where(self.filtered_matrix[i, :] == 1)[0][0]
+            index_sensor = np.where(self.filtered_matrix_chess[i, :] == 1)[0][0]
             image = str(self.sensors[index_sensor].image + str(col) + '.jpg')
             k = self.sensors[index_sensor].k
             dist = self.sensors[index_sensor].dist
@@ -250,6 +320,7 @@ class FirtsGuessCollections:
             chess_to_cam = inv_transformation_matrix(cam_to_chess)
             chess_to_world = np.dot(chess_to_cam, self.sensors_first_guess[index_sensor, :, :])
             chess_first_guess[i, :, :] = chess_to_world
+            # chess_first_guess[i, :, :] = np.dot(np.eye(4), chess_first_guess[0, :, :])
 
         return chess_first_guess
 
@@ -324,6 +395,12 @@ class FirtsGuessCollections:
 
             img1 = cv2.drawChessboardCorners(img1, (9, 6), image_points[0], True)
             cv2.imshow('img_' + s.name, img1)
+            result = cv2.imwrite(args['dataset_path'] + 'saved_collection/' + str(s.name) + '.jpg', img1)
+
+            if result == True:
+                print('File saved successfully')
+            else:
+                print('Error in saving file')
 
             cv2.waitKey(1000)
 
@@ -336,12 +413,30 @@ class FirtsGuessCollections:
 
         return string
 
+    def showcollection(self, number_col, args):
+        for s in self.sensors:
+            name = s.image + str(number_col) + '.jpg'
+            image_points = find_chess_points(name)
+            img = cv2.imread(s.image + str(number_col) + '.jpg')
+
+            if image_points != []:
+                img = cv2.drawChessboardCorners(img, (9, 6), image_points[0], True)
+            cv2.imshow('img_' + s.name, img)
+            cv2.waitKey(1000)
+            result = cv2.imwrite(args['dataset_path'] + 'saved_collection/' + str(s.name) + '.jpg', img)
+
+            if result == True:
+                print('File saved successfully')
+            else:
+                print('Error in saving file')
+
 
 def generate_chessboard(size, dimensions):
     objp = np.zeros((dimensions[0] * dimensions[1], 3), np.float32)
     objp[:, :2] = np.mgrid[0:dimensions[0], 0:dimensions[1]].T.reshape(-1, 2)
     objp = objp * size
     return objp
+
 
 
 def create_matrix_4by4(rvec, tvec):
@@ -394,6 +489,7 @@ def get_solvepnp(fname, k_matrix, dist_matrix):
 
     # Find the chess board corners
     ret, corners = cv2.findChessboardCorners(gray, (9, 6), None)
+
     # If found, add object points, image points (after refining them)
     if ret:
         objpoints.append(pts_chessboard)
@@ -447,6 +543,9 @@ if __name__ == "__main__":
     ap = OptimizationUtils.addArguments(ap)  # OptimizationUtils arguments
     ap.add_argument("-d", "--dataset_path", help="Path to the dataset", type=str, required=True)
     ap.add_argument("-j", "--json_path", help="Full path to Json file", type=str, required=True)
+    ap.add_argument("-t", "--total_collections", help="Maximum collections to be used in calibration", type=int, required=False)
+    ap.add_argument("-c", "--valid_collections", help="Number of cameras detecting chess to be a valid collection", type=int, required=False)
+
     args = vars(ap.parse_args())
 
     # ---------------------------------------
@@ -469,7 +568,14 @@ if __name__ == "__main__":
 
     pts_chessboard = generate_chessboard(size_board, dimensions)
     sensors = calibration_data['calibration_config']['sensor_order']
-
+    if args['total_collections']:
+        total_max = args['total_collections']
+    else:
+        total_max = len(calibration_data['collections'])
+    if args['valid_collections']:
+        min_valid = args['valid_collections']
+    else:
+        min_valid = 2
     # -------------------------------------
     # First cam First guess
     # -------------------------------------
@@ -478,35 +584,43 @@ if __name__ == "__main__":
     classe_importante = FirtsGuessCollections(calibration_data)
 
     info_sensors = classe_importante.Sensorsclass(args)
-    classe_importante.detectedChessCollectionsPerSensor()
+    classe_importante.detectedChessCollectionsPerSensor(total_max, min_valid)
 
-    # print("\nclasse_importante.matrix")
-    # print(classe_importante.matrix)
+    print("\nclasse_importante.matrix")
+    print(classe_importante.matrix)
 
     classe_importante.filterDetectedCollactionsMatrix()
 
-    # print("\nclasse_importante.valid_collections_list")
-    # print(classe_importante.valid_collections_list)
+    print("\nclasse_importante.valid_collections_list")
+    print(classe_importante.valid_collections_list)
+    print("\nNUMERO COLECOES VALIDAS:")
+    print len(classe_importante.valid_collections_list)
+    # exit(0)
     #
-    # print("\nclasse_importante.filtered_matrix")
-    # print(classe_importante.filtered_matrix)
+    print("\nclasse_importante.filtered_matrix")
+    print(classe_importante.filtered_matrix)
 
     classe_importante.createCollectionPairSensorList_v2()
 
-    # print("\nclasse_importante.sensors_list")
-    # print(classe_importante.sensors_list)
+    print("\nclasse_importante.sensors_list")
+    print(classe_importante.sensors_list)
     #
-    # print("\nclasse_importante.non_paired_sensors")
-    # print(classe_importante.non_paired_sensors)
+    print("\nclasse_importante.non_paired_sensors")
+    print(classe_importante.non_paired_sensors)
     #
-    # print ("\nclasse_importante")
-    # print (classe_importante)
+    print ("\nclasse_importante")
+    print (classe_importante)
 
     cams_first_guess = classe_importante.createTransformationmatrix(args)
 
     chess_first_guess = classe_importante.chessboardsFirstGuess()
+    # print(args['dataset_path'] + 'Saved_collection')
+    # exit(0)
 
-    classe_importante.showFirstGuessCorners(chess_first_guess)
+    # classe_importante.showcollection(5, args)
+
+    # classe_importante.showFirstGuessCorners(chess_first_guess)
+    # exit(0)
 
     print ("\nChessboards First Guess")
     print (cams_first_guess)
@@ -561,7 +675,6 @@ if __name__ == "__main__":
         print("Transformation matrix from " + str(ind8) + " camera to World:")
         print(create_matrix_4by4(rot_vector, tr_vector))
         ind7 += 1
-
     # ---------------------------------------
     # --- Setup Optimizer
     # ---------------------------------------
@@ -734,12 +847,16 @@ if __name__ == "__main__":
 
         calibration = model['calibration']
         error = []
+        errorx = []
+        errory = []
         calibration.resetImagePoints()
 
         cams_rotation_vector = np.zeros((len(sensors), 1, 3), np.float32)
         cams_translation = np.zeros((len(sensors), 3), np.float32)
         chess_rotation_vector = np.zeros((1, 3), np.float32)
         chess_translation = np.zeros((3), np.float32)
+        chess_T_world = np.zeros((4, 4), np.float32)
+
         for ind, col in enumerate(list_detected):
 
             for ind5 in range(0, 3):
@@ -748,12 +865,9 @@ if __name__ == "__main__":
                     cams_translation[i2, ind5] = calibration.cams_translation[i2][ind5]
                 chess_rotation_vector[0, ind5] = calibration.chess_rotation_vector[ind][ind5]
                 chess_translation[ind5] = calibration.chess_translation[ind][ind5]
-
             # ---------------------------------------------------------
             # Get T from chessboard to world
             # ---------------------------------------------------------
-            chess_T_world = np.zeros((4, 4), np.float32)
-
             chess_T_world[0:3, 0:3], _ = cv2.Rodrigues(chess_rotation_vector)
             chess_T_world[0:3, 3] = chess_translation.T
             chess_T_world[3, :] = [0, 0, 0, 1]  # homogenize
@@ -787,13 +901,26 @@ if __name__ == "__main__":
                     imgpoints_real = find_chess_points(str(calibration.sensors[ind3].image + str(col) + '.jpg'))
 
                     for a in range(dimensions[0] * dimensions[1]):
-
+                        if calibration.errorxy != 0:
+                            errorx.append(np.abs(imgpoints_optimize[0][a][0][0] - imgpoints_real[0][a][0][0]))
+                            errory.append(np.abs(imgpoints_optimize[0][a][0][1] - imgpoints_real[0][a][0][1]))
+                            continue
                         error.append(
                             math.sqrt((imgpoints_optimize[0][a][0][0] - imgpoints_real[0][a][0][0]) ** 2 + (
                                 imgpoints_optimize[0][a][0][1] - imgpoints_real[0][a][0][1]) ** 2))
 
         # print("avg error: " + str(np.mean(np.array(error))))
         # error = [0 if a_ > 1e15 else a_ for a_ in error]
+        calibration.numberiterations += 1
+        if calibration.errorxy == 1:
+            calibration.errorxy = 2
+            print("ERRO X")
+            return errorx
+        if calibration.errorxy == 2:
+            calibration.errorxy = 0
+            print("ERRO Y")
+            return errory
+        print("ERRO TOTAL")
         return error
 
     opt.setObjectiveFunction(objectiveFunction)
@@ -896,11 +1023,59 @@ if __name__ == "__main__":
         pass
 
 
+    calibration.errorxy = 1
+    errox0 = objectiveFunction(calibration)
+
+    erroy0 = objectiveFunction(calibration)
+    erroI = objectiveFunction(calibration)
+
+    # list_detected = calibration.testCollections(total_max, calibration_data)
+    # print list_detected
+    # erro_test = objectiveFunction(calibration)
+    # calibration.errorxy = 1
+    # errox_test = objectiveFunction(calibration)
+    # erroy_test = objectiveFunction(calibration)
+    # exit(0)
+
+    # print("################################\n")
+    # print("Numero total de residuais: ")
+    # print(len(errox0))
+    # print("################################\n")
+    # print("################################\n")
+    # print ("Erro medio Inicial em X: ")
+    # print (np.mean(np.abs(errox0)))
+    # print("################################\n")
+    # print("################################\n")
+    # print ("Erro medio Inicial em X Sem modulo: ")
+    # print (np.mean(errox0))
+    # print("################################\n")
+    # print("################################\n")
+    # print("Numero total de residuais: ")
+    # print(len(erroy0))
+    # print("################################\n")
+    # print("################################\n")
+    # print ("Erro medio Inicial: ")
+    # print (np.mean(erroI))
+    # print("################################\n")
+    # exit(0)
+
     opt.setVisualizationFunction(visualizationFunction, True)
 
     print("\n\nStarting optimization")
     opt.startOptimization(
         optimization_options={'x_scale': 'jac', 'ftol': 1e-4, 'xtol': 1e-4, 'gtol': 1e-4, 'diff_step': 1e-4})
+
+
+    erro = objectiveFunction(calibration)
+    calibration.errorxy = 1
+    errox1 = objectiveFunction(calibration)
+    erroy1 = objectiveFunction(calibration)
+
+    # list_detected = calibration.testCollections(total_max, calibration_data)
+    # erro_test = objectiveFunction(calibration)
+    # calibration.errorxy = 1
+    # errox_test = objectiveFunction(calibration)
+    # erroy_test = objectiveFunction(calibration)
 
     for ind7, ind8 in enumerate(sensors):
         rot_vector = np.zeros(3)
@@ -915,14 +1090,47 @@ if __name__ == "__main__":
         print("Transformation matrix from " + str(ind8) + " camera to World:")
         print(create_matrix_4by4(rot_vector, tr_vector))
 
-    erro = objectiveFunction(calibration)
+    print("################################\n")
+    print ("Erro medio Inicial: ")
+    print (np.mean(erroI))
+    print("################################\n")
     print("################################\n")
     print ("Erro medio Final: ")
     print (np.mean(erro))
     print("################################\n")
     print("################################\n")
+    print ("Erro medio Inicial em X: ")
+    print (np.mean(errox0))
+    print("################################\n")
+    print ("Erro medio Final em X: ")
+    print (np.mean(errox1))
+    print("################################\n")
+    print ("Erro medio Inicial em Y: ")
+    print (np.mean(erroy0))
+    print("################################\n")
+    print ("Erro medio Final em Y: ")
+    print (np.mean(erroy1))
+    print("################################\n")
+    print ("Numero total de colecoes validas: ")
+    print (len(calibration.collections))
+    print("################################\n")
+    print("################################\n")
     print("Numero total de residuais: ")
     print(len(erro))
     print("################################\n")
+    print ("Numero total de iteracoes : ")
+    print (calibration.numberiterations-7)
+    print("################################\n")
 
-    calibration.showResults(classe_importante.sensors_first_guess)
+    # print("################################\n")
+    # print ("Erro medio TESTE: ")
+    # print (np.mean(erro_test))
+    # print("################################\n")
+    # print("################################\n")
+    # print ("Erro medio em X TESTE: ")
+    # print (np.mean(errox_test))
+    # print("################################\n")
+    # print ("Erro medio em Y TESTE: ")
+    # print (np.mean(erroy_test))
+    # print("################################\n")
+    calibration.saveResults(classe_importante.sensors_first_guess, calibration_data)
